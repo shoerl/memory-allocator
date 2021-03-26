@@ -120,6 +120,24 @@ insert(free_block* to_insert)
 	}
 }
 
+void
+add_or_discard(free_block* curr, free_block* prev)
+{
+	if (curr->size > sizeof(free_block)) {
+		if (prev == NULL) {
+			// if we are messing with head of list
+			free_list = curr;
+		} else {
+			prev->next = curr;
+		}
+	} else {
+		if (prev == NULL) {
+			free_list = NULL;
+		} else {
+			prev->next = curr->next;
+		}
+	}
+}
 
 void*
 xmalloc(size_t size)
@@ -136,21 +154,7 @@ xmalloc(size_t size)
 				block->size = size;
 				curr = ((void*) curr) + size;
 				curr->size = oldSize - size;
-				if (curr->size > sizeof(free_block)) {
-					if (prev == NULL) {
-					// if we are messing with head of list
-						free_list = curr;
-					} else {
-						prev->next = curr;
-					}
-				} else {
-					if (prev == NULL) {
-						free_list = NULL;
-					} else {
-						prev->next = curr->next;
-					}
-				}
-
+				add_or_discard(curr, prev);
 				return ((void*) block) + sizeof(size_t); 
 
 			}
@@ -208,34 +212,14 @@ xrealloc(void* prev, size_t bytes)
 	for (free_block* head = free_list; head != NULL; head=head->next) {
 		// if these are adjacent
 		// TODO: if extra space in free block head, break it up
-		if ((uintptr_t) tmp == (uintptr_t) head && bytes >= (head->size + prev_size)) {
+		if ((uintptr_t) tmp == (uintptr_t) head && bytes <= (head->size + prev_size)) {
 			size_t space_needed = bytes - prev_size;
 			size_t leftover_space = head->size - space_needed;
-			if (leftover_space <= 16) {
-				prev_block->size += head->size;
-				if (other_prev == NULL) {
-					if (head->next) {
-						free_list = head->next;
-					} else {
-						free_list = NULL;
-					}
-				} else {
-					other_prev->next = head->next;
-				}
-				return prev + sizeof(size_t);
-			} else {
-				// how much space to allocate for new block
-				prev_block->size += space_needed;
-				head = ((void*) head) + space_needed;
-				head->size = leftover_space;
-				if (other_prev == NULL) {
-					free_list = head;
-				} else {
-					other_prev->next = head;
-				}
-				return prev + sizeof(size_t);
-			}
-	
+			prev_block->size += space_needed;
+			head = ((void*) head) + space_needed;
+			head->size = leftover_space;
+			add_or_discard(head, other_prev);
+			return prev + sizeof(size_t);
 		}
 		// set prev for next iteration
 		other_prev = head;
@@ -260,5 +244,6 @@ main(int argc, char* argv[])
     }
 	xs[32] = 500;
 	printf("%li\n", xs[32]);
+	hprintstats();
 	xfree(xs);
 }
