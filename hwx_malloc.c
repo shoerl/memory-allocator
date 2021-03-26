@@ -2,6 +2,7 @@
 #include <stdint.h>
 #include <sys/mman.h>
 #include <stdio.h>
+#include <string.h>
 #include "xmalloc.h"
 
 // TODO: This file should be replaced by another allocator implementation.
@@ -17,6 +18,7 @@
 //    one mutex to protect the free list. This has already been done for the
 //    provided xv6 allocator.
 //  - Implement the "realloc" function for this allocator.
+
 const size_t PAGE_SIZE = 4096;
 static hm_stats stats; // This initializes the stats to 0.
 free_block* free_list = NULL;
@@ -71,6 +73,9 @@ void
 coalesce()
 {
 	free_block* prev = free_list;
+	if (prev == NULL) {
+		return;
+	}
 	free_block* head = free_list->next;
 	int count = 0;
 	for (; head != NULL; head=head->next) {
@@ -126,19 +131,16 @@ xmalloc(size_t size)
 		free_block* curr = free_list;
 		for (; curr != NULL; curr=curr->next) {
 			if (curr->size >= size) {
-				int oldSize = curr->size;
+				size_t oldSize = curr->size;
 				block_header* block = (void*) curr;
 				block->size = size;
-				free_block* oldNext = curr->next;
 				curr = ((void*) curr) + size;
 				curr->size = oldSize - size;
 				if (curr->size > sizeof(free_block)) {
 					if (prev == NULL) {
 					// if we are messing with head of list
-						curr->next = NULL;
 						free_list = curr;
 					} else {
-						curr->next = oldNext;
 						prev->next = curr;
 					}
 				} else {
@@ -195,6 +197,68 @@ xfree(void* item)
 void*
 xrealloc(void* prev, size_t bytes)
 {
-    // TODO: write realloc
-    return 0;
+	prev = prev - sizeof(size_t);
+	block_header* prev_block = prev;
+	size_t prev_size = prev_block->size;
+	if (bytes == prev_size) {
+		return ((void*) prev_block);
+	}
+	void* tmp = ((void*) prev) + prev_block->size;
+	free_block* other_prev = NULL;
+	for (free_block* head = free_list; head != NULL; head=head->next) {
+		// if these are adjacent
+		// TODO: if extra space in free block head, break it up
+		if ((uintptr_t) tmp == (uintptr_t) head && bytes >= (head->size + prev_size)) {
+			size_t space_needed = bytes - prev_size;
+			size_t leftover_space = head->size - space_needed;
+			if (leftover_space <= 16) {
+				prev_block->size += head->size;
+				if (other_prev == NULL) {
+					if (head->next) {
+						free_list = head->next;
+					} else {
+						free_list = NULL;
+					}
+				} else {
+					other_prev->next = head->next;
+				}
+				return prev + sizeof(size_t);
+			} else {
+				// how much space to allocate for new block
+				prev_block->size += space_needed;
+				head = ((void*) head) + space_needed;
+				head->size = leftover_space;
+				if (other_prev == NULL) {
+					free_list = head;
+				} else {
+					other_prev->next = head;
+				}
+				return prev + sizeof(size_t);
+			}
+	
+		}
+		// set prev for next iteration
+		other_prev = head;
+	}
+    void* new_space = xmalloc(bytes);
+    memcpy(new_space, prev, prev_size);
+    ((block_header*) new_space)->size = bytes;
+    xfree(prev + sizeof(size_t));
+    return new_space + sizeof(size_t);
+}
+
+int
+main(int argc, char* argv[])
+{
+    long* xs = xmalloc(30 * sizeof(long));
+    for (int i = 0; i < 30; i++) {
+    	xs[i] = i + 1;
+    }
+    xs = xrealloc(xs, 50 * sizeof(long));
+    for (int i = 0; i < 30; i++) {
+    	printf("at index %i : %li\n", i, xs[i]);
+    }
+	xs[32] = 500;
+	printf("%li\n", xs[32]);
+	xfree(xs);
 }
