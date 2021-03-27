@@ -3,7 +3,9 @@
 #include <sys/mman.h>
 #include <stdio.h>
 #include <string.h>
+#include <pthread.h>
 #include "xmalloc.h"
+#include <assert.h>
 
 // TODO: This file should be replaced by another allocator implementation.
 //
@@ -22,6 +24,7 @@
 const size_t PAGE_SIZE = 4096;
 static hm_stats stats; // This initializes the stats to 0.
 free_block* free_list = NULL;
+static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 long
 free_list_length()
@@ -142,6 +145,8 @@ add_or_discard(free_block* curr, free_block* prev)
 void*
 xmalloc(size_t size)
 {
+	int ret = pthread_mutex_lock(&lock);
+	assert(ret != -1);
  	size += sizeof(size_t);
 	stats.chunks_allocated += 1;
 	if (size < PAGE_SIZE) {
@@ -155,6 +160,8 @@ xmalloc(size_t size)
 				curr = ((void*) curr) + size;
 				curr->size = oldSize - size;
 				add_or_discard(curr, prev);
+				ret = pthread_mutex_unlock(&lock);
+				assert(ret != -1);
 				return ((void*) block) + sizeof(size_t); 
 
 			}
@@ -169,11 +176,15 @@ xmalloc(size_t size)
 		if (new_block->size > sizeof(free_block)) {
 			insert(new_block);
 		}
+		ret = pthread_mutex_unlock(&lock);
+		assert(ret != -1);
 		return ((void*) new_header) + sizeof(size_t);
 	} else {
 		void* block = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 		((block_header*) block)->size = size - sizeof(size_t);
 		stats.pages_mapped += div_up(size, PAGE_SIZE);
+		ret = pthread_mutex_unlock(&lock);
+		assert(ret != -1);
 		return block + sizeof(size_t);
 	}
 }
@@ -181,6 +192,8 @@ xmalloc(size_t size)
 void
 xfree(void* item)
 {
+	int ret = pthread_mutex_lock(&lock);
+	assert(ret != -1);
     // TODO: replace this with free
     stats.chunks_freed += 1;
     void* item_f = item - sizeof(size_t);
@@ -196,6 +209,8 @@ xfree(void* item)
     	stats.pages_unmapped += div_up(size, PAGE_SIZE);
     	munmap(item_f, size);
     }
+    ret = pthread_mutex_unlock(&lock);
+    assert(ret != -1);
 }
 
 void*
@@ -231,6 +246,7 @@ xrealloc(void* prev, size_t bytes)
     return new_space + sizeof(size_t);
 }
 
+/*
 int
 main(int argc, char* argv[])
 {
@@ -247,3 +263,4 @@ main(int argc, char* argv[])
 	hprintstats();
 	xfree(xs);
 }
+*/
