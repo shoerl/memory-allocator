@@ -14,9 +14,9 @@ free_block* xpop(int bucket)
 {
 	free_block* first = bins[bucket];
 	if (first->next) {
-		bins[bucket] = NULL;
-	} else {
 		bins[bucket] = first->next;
+	} else {
+		bins[bucket] = NULL;
 	}
 	return first;
 
