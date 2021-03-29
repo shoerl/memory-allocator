@@ -256,7 +256,13 @@ xfree(void* ptr)
 	// toggle the bitmap at that index
 	toggle_bitmap(header, idx);
 	if (can_remap(header)) {
+		if (header->next == 0) {
+			bins[find_bucket_index(header->size)] = 0;
+		} else {
+			bins[find_bucket_index(header->size)] = header->next;
+		}
 		munmap(header, PAGE_SIZE);
+
 	}
 	pthread_mutex_unlock(&(lock));
 }
