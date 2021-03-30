@@ -43,13 +43,22 @@ const size_t PAGE_SIZE = 4096;
 // so if int = 0, whole page is free
 // if int = -1, whole page is full
 
+// taken from Nat Tuck's notes from this semester
+void
+assert_ok(long rv, const char* call)
+{
+    if (rv == -1) {
+        perror(call);
+        exit(1);
+    }
+}
 
-
+// gets the smallest bucket able to hold to the given size or return -1
 int
 find_bucket_index(size_t size)
 {
 	int ii = 0;
-	while(ii != 19) {
+	while(ii < 19) {
 		if (size <= sizes[ii]) {
 			return ii;
 		}
@@ -58,6 +67,7 @@ find_bucket_index(size_t size)
 	return -1;
 }
 
+// gets the block size of the bucket at the given index
 size_t
 find_bucket_size(int idx)
 {
@@ -68,6 +78,7 @@ find_bucket_size(int idx)
 
 }
 
+// gets the header of the page that holds the given ptr
 uintptr_t
 find_closest_pointer(uintptr_t ptr)
 {
@@ -79,12 +90,13 @@ find_closest_pointer(uintptr_t ptr)
 int
 amount_of_blocks(size_t bytes)
 {
-	//4096 - 120
+	//4096 - 120 because part of the page contains metadata
 	int size = PAGE_SIZE - sizeof(page_header);
 	// integer divison rounds down so we good
 	return size / bytes;
 
 }
+
 
 void toggle_bitmap(page_header* header, int idx)
 {
@@ -93,12 +105,14 @@ void toggle_bitmap(page_header* header, int idx)
 	header->bitmap[num] ^= (1 << b_idx);
 }
 
+
 page_header*
 init_header(size_t bytes, page_header* passed, int tidx)
 {
 	//TODO: add case where we set next to a another page header
 	page_header* header = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
 	MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+	assert_ok((long) header, "mmap");
 	header->size = bytes;
 	header->tidx = tidx;
 	int amount = amount_of_blocks(bytes);
@@ -178,6 +192,7 @@ xmalloc(size_t bytes)
 	if (bytes > BIGGEST_SIZE) {
 		bytes += sizeof(special_page_header);
 		special_page_header* sph = mmap(NULL, bytes, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+		assert_ok((long) sph, "mmap");
 		sph->size = bytes;
 		// my birthday :)
 		sph->proof = 19405152000;
@@ -241,13 +256,12 @@ can_remap(page_header* header) {
 void
 xfree(void* ptr)
 {
-	// this is not a good way of doing it but whatever
 	void* ptr_b = ptr - sizeof(size_t);
 	size_t thesize = *((size_t*) ptr_b);
 	if (thesize == 19405152000) {
 		ptr_b -= sizeof(size_t);
 		size_t size = *((size_t*) ptr_b);
-		munmap(ptr_b, size);
+		assert_ok(munmap(ptr_b, size), "munmap");
 		return;
 	}
 	uintptr_t pt = find_closest_pointer((uintptr_t) ptr);
@@ -260,18 +274,18 @@ xfree(void* ptr)
 	toggle_bitmap(header, idx);
 	if (can_remap(header)) {
 		int hdr_idx = find_bucket_index(header->size);
-		if (header->prev == 0 && header->next == 0) {
-			bins[hdr_idx][tidx] = 0;
-		} else if (header->prev == 0 && header->next) {
-			(header->next)->prev = 0;
+		if (header->prev == 0) {
 			bins[hdr_idx][tidx] = header->next;
-		} else if (header->prev && header->next) {
-			(header->next)->prev = header->prev;
+			if (header->next) {
+				(header->next)->prev = 0;
+			}
+		} else {
 			(header->prev)->next = header->next;
-		} else if (header->prev && header->next == 0) {
-			(header->prev)->next = 0;
+			if (header->next) {
+				(header->next)->prev = header->prev;
+			}
 		}
-		munmap(header, PAGE_SIZE);
+		assert_ok(munmap(header, PAGE_SIZE), "munmap");
 
 	}
 	pthread_mutex_unlock(&(locks[tidx]));
