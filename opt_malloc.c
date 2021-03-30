@@ -72,30 +72,6 @@ find_closest_pointer(uintptr_t ptr)
 	return ptr &= -PAGE_SIZE;
 }
 
-/*
-int
-round_up_divison(int x, int y)
-{
-	return x/y + (x % y != 0);
-}
-
-int
-amount_of_blocks(size_t bytes)
-{
-	// 4096 - 16
-	int size = PAGE_SIZE - sizeof(size_t) - sizeof(page_header*) ;
-	// 4080 / size of each block
-	int first_guess = size / bytes;
-	// (size of each block * amount of blocks) + (rounded up (amount of blocks / 32))
-	int total = (bytes * first_guess) + (sizeof(int) * round_up_divison(first_guess, BITS_PER_INT));
-	while (total > size) {
-		first_guess--;
-		total = (bytes * first_guess) + (sizeof(int) * round_up_divison(first_guess, BITS_PER_INT));
-	}
-	printf("%i\n", first_guess);
-	return first_guess;
-}
-*/
 
 int
 amount_of_blocks(size_t bytes)
@@ -230,7 +206,9 @@ xmalloc(size_t bytes)
 
 int
 can_remap(page_header* header) {
+	// amount of entries that are real
 	int numblocks = amount_of_blocks(header->size);
+	// extra entires that are default set to 1
 	int extra = (BITS_PER_INT * BITMAP_LENGTH) - numblocks;
 	int leftover = extra / BITS_PER_INT + (extra % BITS_PER_INT != 0);
 	int idx_bad = BITMAP_LENGTH - leftover;
@@ -242,7 +220,8 @@ can_remap(page_header* header) {
 		}
 	}
 
-	for (int ii = 0; ii < numblocks; ii++) {
+	int start = (idx_bad * BITS_PER_INT);
+	for (int ii = start; ii < numblocks; ii++) {
 		int num = header->bitmap[ii / BITS_PER_INT];
 		int idx = ii % BITS_PER_INT;
 		if ((num >> idx) % 2 != 0) {
@@ -300,9 +279,7 @@ xrealloc(void* prev, size_t bytes)
 	page_header* header = (page_header*) pt;
 	size_t size = header->size;
 	void* new_space = xmalloc(bytes);
-	//pthread_mutex_lock(&lock);
 	memcpy(new_space, prev, size);
-	//pthread_mutex_unlock(&lock);
 	xfree(prev);
 	return new_space;
 }
