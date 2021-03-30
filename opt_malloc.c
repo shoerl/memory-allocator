@@ -3,6 +3,7 @@
 #include <string.h>
 #include <math.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include <stdio.h>
 #include <pthread.h>
 
@@ -13,6 +14,7 @@ struct page_header {
 	page_header* next; // 8 bytes
 	page_header* prev; // 8 bytes
 	int bitmap[16]; // 64 bytes
+	int tidx;
 };
 
 typedef struct special_page_header {
@@ -28,9 +30,10 @@ const int BIGGEST_SIZE = 4008;
 const size_t sizes[19] = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512,
 	768, 1024, 1536, 2048, 3192, 4008 };
 // array of pointers to page headers
-static page_header* bins[19];
+static page_header* bins[19][4];
+static pthread_mutex_t locks[4] = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 const size_t PAGE_SIZE = 4096;
-static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+//static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 
 // 20 buckets = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 
@@ -91,12 +94,13 @@ void toggle_bitmap(page_header* header, int idx)
 }
 
 page_header*
-init_header(size_t bytes, page_header* passed)
+init_header(size_t bytes, page_header* passed, int tidx)
 {
 	//TODO: add case where we set next to a another page header
 	page_header* header = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
 	MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 	header->size = bytes;
+	header->tidx = tidx;
 	int amount = amount_of_blocks(bytes);
 	for (int i = 0; i < BITMAP_LENGTH; i++) {
 		// set every int to all 1
@@ -111,7 +115,7 @@ init_header(size_t bytes, page_header* passed)
 	if (passed == 0) {
 		header->prev = 0;
 		// this is first one, put in spot in bin
-		bins[find_bucket_index(bytes)] = header;
+		bins[find_bucket_index(bytes)][tidx] = header;
 	} else {
 		header->prev = passed;
 		passed->next = header;
@@ -170,19 +174,20 @@ last_bucket(page_header* header) {
 void*
 xmalloc(size_t bytes)
 {
-	pthread_mutex_lock(&(lock));
+	
 	if (bytes > BIGGEST_SIZE) {
 		bytes += sizeof(special_page_header);
 		special_page_header* sph = mmap(NULL, bytes, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
 		sph->size = bytes;
 		// my birthday :)
 		sph->proof = 19405152000;
-		pthread_mutex_unlock(&(lock));
 		return ((void*) sph) + sizeof(special_page_header);
 	}
+	int tidx = rand() % 4;
+	pthread_mutex_lock(&(locks[tidx]));
 	// figure out which bucket to go to
 	int bucket = find_bucket_index(bytes);
-	page_header* header = get_usable_header(bins[bucket]);
+	page_header* header = get_usable_header(bins[bucket][tidx]);
 	// should be 80
 	size_t offset = sizeof(page_header);
 	// if there is no header with space
@@ -190,16 +195,16 @@ xmalloc(size_t bytes)
 		// we should be passing in last_bucket(bins[bucket]) instead of header - but that 
 		// causes it to slow down tremendously in order to find the last one and it also 
 		// seems to not break when you just pass header, so whatever
-		header = init_header(find_bucket_size(bucket), header);
+		header = init_header(find_bucket_size(bucket), header, tidx);
 		// since we now passing first block
 		toggle_bitmap(header, 0);
-		pthread_mutex_unlock(&(lock));
+		pthread_mutex_unlock(&(locks[tidx]));
 		return ((void*) header) + offset;
 	}
 	int first_free = find_first_free(header);
 	toggle_bitmap(header, first_free);
 	// we know there is at least 1 free space
-	pthread_mutex_unlock(&(lock));
+	pthread_mutex_unlock(&(locks[tidx]));
 	return ((void*) header) + offset + (first_free * header->size);
 	
 }
@@ -237,18 +242,18 @@ void
 xfree(void* ptr)
 {
 	// this is not a good way of doing it but whatever
-	pthread_mutex_lock(&(lock));
 	void* ptr_b = ptr - sizeof(size_t);
 	size_t thesize = *((size_t*) ptr_b);
 	if (thesize == 19405152000) {
 		ptr_b -= sizeof(size_t);
 		size_t size = *((size_t*) ptr_b);
 		munmap(ptr_b, size);
-		pthread_mutex_unlock(&(lock));
 		return;
 	}
 	uintptr_t pt = find_closest_pointer((uintptr_t) ptr);
 	page_header* header = (page_header*) pt;
+	int tidx = header->tidx;
+	pthread_mutex_lock(&(locks[tidx]));
 	// to calculate index of spot to free
 	long idx = (((uintptr_t) ptr - pt) - sizeof(page_header)) / header->size;
 	// toggle the bitmap at that index
@@ -256,10 +261,10 @@ xfree(void* ptr)
 	if (can_remap(header)) {
 		int hdr_idx = find_bucket_index(header->size);
 		if (header->prev == 0 && header->next == 0) {
-			bins[hdr_idx] = 0;
+			bins[hdr_idx][tidx] = 0;
 		} else if (header->prev == 0 && header->next) {
 			(header->next)->prev = 0;
-			bins[hdr_idx] = header->next;
+			bins[hdr_idx][tidx] = header->next;
 		} else if (header->prev && header->next) {
 			(header->next)->prev = header->prev;
 			(header->prev)->next = header->next;
@@ -269,7 +274,7 @@ xfree(void* ptr)
 		munmap(header, PAGE_SIZE);
 
 	}
-	pthread_mutex_unlock(&(lock));
+	pthread_mutex_unlock(&(locks[tidx]));
 }
 
 void*
