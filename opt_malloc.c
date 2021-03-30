@@ -30,13 +30,14 @@ const int BIGGEST_SIZE = 3192;
 const size_t sizes[18] = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3192 };
 // array of pointers to page headers
 static page_header* bins[18][4];
-static pthread_mutex_t locks[4] = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
+// initialize all threads to pthread initializer
+static pthread_mutex_t locks[4] = { PTHREAD_MUTEX_INITIALIZER };
 const size_t PAGE_SIZE = 4096;
 //static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 
-// 20 buckets = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 
-// 384, 512, 768, 1024, 1536, 2048, 3192, 4016}
+// 18 buckets = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 
+// 384, 512, 768, 1024, 1536, 2048, 3192 }
 
 // 0 is free, 1 is full/unusable
 // so if int = 0, whole page is free
