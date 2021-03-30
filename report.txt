@@ -1,0 +1,58 @@
+CH2 REPORT
+1. Compare your optimized allocator to the hwx allocator. For 
+each of (list, ivec), pick an input size where the slower 
+allocator takes about 10 seconds. How fast did each allocator
+run for that input? Which one was faster and by how much? Show 
+measurements with a table.
+OPT    VS    HWX
+
+2. Compare your optimized allocator to the system allocator. 
+For each of (list, ivec), pick an input size where the slower 
+allocator takes about 10 seconds. How fast did each allocator 
+run for that input? Which one was faster and by how much? Show 
+measurements with a table.
+OPT    VS    SYS
+
+3. What techniques did you use in your optimized allocator?
+ We attempted arenas, but it made it slower. So we came up with 
+ having different memory pools to avoid collisions and reduce
+ sequencing. Overall, we did the bucket solution with 
+ metadata at the beginning of the block. This allowed us to round
+ down the pointer and use the bitmap to find available memory 
+ blocks. For each of the threads created in the test scripts, 
+ there's a 
+ corresponding mutex and list of buckets/bins. Each bin has a page
+ header ptr pointing to the top of a page that is separated into 
+ chunks that are the size corresponding to that bucket. Each bucket
+ has a corresponding size of 2^i and the midpoints between them (8, 
+ 12, 16, ... 3192). 
+ 
+
+4. How does your allocator handle reusing memory?
+ Memory cannot be reused while still in use from an original 
+ xmalloc(). Upon memory being xfree()'d, the memory is freed 
+ immediately or set up for reuse depending on its size. If it 
+ is a size smaller than a page, the page that block falls on
+ is found and a bitmap tracking the usable blocks marks that
+ that block is available. 
+ We unmap a whole page when it is completely empty and no 
+ blocks on it are being used. 
+
+5. What was the most significant challenge in building your 
+optimized allocator?
+ Building the overall design was okay, especially with the 
+ challenge hints in class, but the execution took a lot of 
+ debugging time. Making sure threads didn't enter into a 
+ deadlock, and that the code kept track of which data was 
+ under the control of which thread, took some time. Figuring
+ out the pointer arithmetic to access the right areas of 
+ allocated memory. 
+
+6. If you were to redo the assignment would you use the same 
+allocator design? Why?
+ Although our design is nice and speedy, it still doesn't beat
+ the system. Adding thread support in our allocator did not 
+ make an impressive speedup, which was a surprise. For how much
+ trouble it was to implement this complex design, the speedup 
+ benefits were not worth it. The system malloc is a great option.
+
