@@ -14,7 +14,7 @@ struct page_header {
 	page_header* next; // 8 bytes
 	page_header* prev; // 8 bytes
 	int bitmap[16]; // 64 bytes
-	int tidx;
+	int tidx; // 4 bytes
 };
 
 typedef struct special_page_header {
@@ -25,12 +25,11 @@ typedef struct special_page_header {
 // if smallest size is 8, then most bytes we need is 64, which is 16 ints
 const int BITMAP_LENGTH = 16;
 const int BITS_PER_INT = 8 * sizeof(int);
-const int BIGGEST_SIZE = 4008;
+const int BIGGEST_SIZE = 3192;
 // sizes for easy lookup
-const size_t sizes[19] = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512,
-	768, 1024, 1536, 2048, 3192, 4008 };
+const size_t sizes[18] = { 8, 12, 16, 24, 32, 48, 64, 96, 128, 192, 256, 384, 512, 768, 1024, 1536, 2048, 3192 };
 // array of pointers to page headers
-static page_header* bins[19][4];
+static page_header* bins[18][4];
 static pthread_mutex_t locks[4] = {PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER, PTHREAD_MUTEX_INITIALIZER};
 const size_t PAGE_SIZE = 4096;
 //static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
@@ -58,7 +57,7 @@ int
 find_bucket_index(size_t size)
 {
 	int ii = 0;
-	while(ii < 19) {
+	while(ii < 18) {
 		if (size <= sizes[ii]) {
 			return ii;
 		}
@@ -71,7 +70,7 @@ find_bucket_index(size_t size)
 size_t
 find_bucket_size(int idx)
 {
-	if (idx < 0 || idx >= 19) {
+	if (idx < 0 || idx >= 18) {
 		return -1;
 	}
 	return sizes[idx];
@@ -90,7 +89,7 @@ find_closest_pointer(uintptr_t ptr)
 int
 amount_of_blocks(size_t bytes)
 {
-	//4096 - 120 because part of the page contains metadata
+	//4096 - 92 because part of the page contains metadata
 	int size = PAGE_SIZE - sizeof(page_header);
 	// integer divison rounds down so we good
 	return size / bytes;
@@ -107,7 +106,7 @@ void toggle_bitmap(page_header* header, int idx)
 
 
 page_header*
-init_header(size_t bytes, page_header* passed, int tidx)
+init_header(size_t bytes, page_header* passed, int tidx, int bucketidx)
 {
 	//TODO: add case where we set next to a another page header
 	page_header* header = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE,
@@ -116,12 +115,22 @@ init_header(size_t bytes, page_header* passed, int tidx)
 	header->size = bytes;
 	header->tidx = tidx;
 	int amount = amount_of_blocks(bytes);
-	for (int i = 0; i < BITMAP_LENGTH; i++) {
+	int extra = (BITS_PER_INT * BITMAP_LENGTH) - amount;
+	int leftover = extra / BITS_PER_INT + (extra % BITS_PER_INT != 0);
+	int idx_bad = BITMAP_LENGTH - leftover;
+
+	for (int i = 0; i < idx_bad; i++) {
+		// set every int to all 1
+		header->bitmap[i] = 0;
+	}
+
+	for (int i = idx_bad; i < BITMAP_LENGTH; i++) {
 		// set every int to all 1
 		header->bitmap[i] = -1;
 	}
+	int start = BITS_PER_INT * idx_bad;
 	// 0 is free, 1 is full/unusable
-	for (int j = 0; j < amount; j++) {
+	for (int j = start; j < amount; j++) {
 		toggle_bitmap(header, j);
 	}
 
@@ -129,7 +138,7 @@ init_header(size_t bytes, page_header* passed, int tidx)
 	if (passed == 0) {
 		header->prev = 0;
 		// this is first one, put in spot in bin
-		bins[find_bucket_index(bytes)][tidx] = header;
+		bins[bucketidx][tidx] = header;
 	} else {
 		header->prev = passed;
 		passed->next = header;
@@ -174,17 +183,6 @@ find_first_free(page_header* header)
 	return -1;
 }
 
-page_header*
-last_bucket(page_header* header) {
-	if (header == 0) {
-		return 0;
-	}
-	if (header->next) {
-		return last_bucket(header->next);
-	}
-	return header;
-}
-
 void*
 xmalloc(size_t bytes)
 {
@@ -207,10 +205,7 @@ xmalloc(size_t bytes)
 	size_t offset = sizeof(page_header);
 	// if there is no header with space
 	if (header == 0) {
-		// we should be passing in last_bucket(bins[bucket]) instead of header - but that 
-		// causes it to slow down tremendously in order to find the last one and it also 
-		// seems to not break when you just pass header, so whatever
-		header = init_header(find_bucket_size(bucket), header, tidx);
+		header = init_header(find_bucket_size(bucket), header, tidx, bucket);
 		// since we now passing first block
 		toggle_bitmap(header, 0);
 		pthread_mutex_unlock(&(locks[tidx]));
