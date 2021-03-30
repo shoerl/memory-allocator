@@ -1,125 +1,160 @@
+#include <string.h>
 #include <stdlib.h>
 #include <stdint.h>
 #include <sys/mman.h>
 #include <stdio.h>
-#include <string.h>
-#include <pthread.h>
-#include "xmalloc.h"
 #include <assert.h>
+#include <pthread.h>
 
-// TODO: This file should be replaced by another allocator implementation.
-//
-// If you have a working allocator from the previous HW, use that.
-//
-// If your previous homework doesn't work, you can use the provided allocator
-// taken from the xv6 operating system. It's in xv6_malloc.c
-//
-// Either way:
-//  - Replace xmalloc and xfree below with the working allocator you selected.
-//  - Modify the allocator as nessiary to make it thread safe by adding exactly
-//    one mutex to protect the free list. This has already been done for the
-//    provided xv6 allocator.
-//  - Implement the "realloc" function for this allocator.
+#include "xmalloc.h"
 
-typedef long Align;
-
-union header {
-  struct {
-    union header *ptr;
-    unsigned int size;
-  } s;
-  Align x;
-};
-
-typedef union header Header;
-
+const size_t PAGE_SIZE = 4096;
+free_block* free_list = NULL;
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
-static Header base;
-static Header *freep;
 
-static
+
 void
-xfree_helper(void *ap)
+coalesce()
 {
-  Header *bp, *p;
+  free_block* prev = free_list;
+  if (prev == NULL) {
+    return;
+  }
+  free_block* head = free_list->next;
+  if (head == 0) {
+    return;
+  }
+  int count = 0;
+  for (; head != NULL; head=head->next) {
+    void* tmp = ((void*) prev) + prev->size;
+    // if these are adjacent
+    if ((uintptr_t) tmp == (uintptr_t) head) {
+      count++;
+      // add size to prev
+      prev->size += head->size;
+      // set next of prev to next of current (aka remove current from list)
+      prev->next = head->next;
+    }
+    // set prev for next iteration
+    prev = head;
+  }
+  if (count > 0) {
+    coalesce();
+  }
+}
 
-  bp = (Header*)ap - 1;
-  for(p = freep; !(bp > p && bp < p->s.ptr); p = p->s.ptr)
-    if(p >= p->s.ptr && (bp > p || bp < p->s.ptr))
+
+void
+insert(free_block* to_insert)
+{
+  free_block* head = free_list;
+  if (head == 0) {
+    return;
+  }
+  free_block* prev = NULL;
+  for (; head != NULL; head=head->next) {
+    // if these are adjacent
+    if ((uintptr_t) to_insert < (uintptr_t) head) {
+      if (prev != NULL) {
+        prev->next = to_insert;
+      }
+      to_insert->next = head;
       break;
-  if(bp + bp->s.size == p->s.ptr){
-    bp->s.size += p->s.ptr->s.size;
-    bp->s.ptr = p->s.ptr->s.ptr;
-  } else
-    bp->s.ptr = p->s.ptr;
-  if(p + p->s.size == bp){
-    p->s.size += bp->s.size;
-    p->s.ptr = bp->s.ptr;
-  } else
-    p->s.ptr = bp;
-  freep = p;
+    }
+    // set prev for next iteration
+    prev = head;
+  }
+  // if we are inserting it to first slot fix free list pointer
+  if (prev == NULL) {
+    free_list = to_insert;
+  }
 }
 
 void
-xfree(void* ap)
+add_or_discard(free_block* curr, free_block* prev)
 {
-  pthread_mutex_lock(&lock);
-  xfree_helper(ap);
-  pthread_mutex_unlock(&lock);
-}
-
-static Header*
-morecore(size_t nu)
-{
-  char *p;
-  Header *hp;
-
-  if(nu < 4096)
-    nu = 4096;
-  // TODO: Replace sbrk use with mmap
-  p = mmap(0, nu * sizeof(Header), PROT_READ|PROT_WRITE,
-           MAP_ANONYMOUS|MAP_PRIVATE, -1, 0);
-  if(p == (char*)-1)
-    return 0;
-  hp = (Header*)p;
-  hp->s.size = nu;
-  xfree_helper((void*)(hp + 1));
-  return freep;
+  if (curr->size > sizeof(free_block)) {
+    if (prev == NULL) {
+      // if we are messing with head of list
+      free_list = curr;
+    } else {
+      prev->next = curr;
+    }
+  } else {
+    if (prev == NULL) {
+      free_list = NULL;
+    } else {
+      prev->next = curr->next;
+    }
+  }
 }
 
 void*
-xmalloc(size_t nbytes)
+xmalloc(size_t size)
 {
-  Header *p, *prevp;
-  unsigned int nunits;
+  int ret = pthread_mutex_lock(&lock);
+  assert(ret != -1);
+  size += sizeof(size_t);
+  if (size < PAGE_SIZE) {
+    free_block* prev = NULL;
+    free_block* curr = free_list;
+    for (; curr != NULL; curr=curr->next) {
+      if (curr->size >= size) {
+        size_t oldSize = curr->size;
+        block_header* block = (void*) curr;
+        block->size = size;
+        curr = ((void*) curr) + size;
+        curr->size = oldSize - size;
+        add_or_discard(curr, prev);
+        ret = pthread_mutex_unlock(&lock);
+        assert(ret != -1);
+        return ((void*) block) + sizeof(size_t); 
 
-  pthread_mutex_lock(&lock);
-  nunits = (nbytes + sizeof(Header) - 1)/sizeof(Header) + 1;
-  if((prevp = freep) == 0){
-    base.s.ptr = freep = prevp = &base;
-    base.s.size = 0;
-  }
-  for(p = prevp->s.ptr; ; prevp = p, p = p->s.ptr){
-    if(p->s.size >= nunits){
-      if(p->s.size == nunits)
-        prevp->s.ptr = p->s.ptr;
-      else {
-        p->s.size -= nunits;
-        p += p->s.size;
-        p->s.size = nunits;
       }
-      freep = prevp;
-      pthread_mutex_unlock(&lock);
-      return (void*)(p + 1);
+      prev = curr;
     }
-    if(p == freep) {
-      if((p = morecore(nunits)) == 0) {
-        pthread_mutex_unlock(&lock);
-        return 0;
-      }
+    // no more space, map extra page 
+    block_header* new_header = mmap(NULL, PAGE_SIZE, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    new_header->size = size;
+    free_block* new_block = ((void*) new_header) + size;
+    new_block->size = PAGE_SIZE - size;
+    if (new_block->size > sizeof(free_block)) {
+      insert(new_block);
     }
+    ret = pthread_mutex_unlock(&lock);
+    assert(ret != -1);
+    return ((void*) new_header) + sizeof(size_t);
+  } else {
+    void* block = mmap(NULL, size, PROT_READ|PROT_WRITE, MAP_PRIVATE|MAP_ANONYMOUS, -1, 0);
+    ((block_header*) block)->size = size - sizeof(size_t);
+    ret = pthread_mutex_unlock(&lock);
+    assert(ret != -1);
+    return block + sizeof(size_t);
   }
 }
+
+void
+xfree(void* item)
+{
+  int ret = pthread_mutex_lock(&lock);
+  assert(ret != -1);
+    // TODO: replace this with free
+    void* item_f = item - sizeof(size_t);
+    size_t size = *((size_t*) item_f);
+    // to account for size we keep track of
+    if (size < PAGE_SIZE) {
+      free_block* new = item_f;
+      new->size = size;
+      insert(new);
+      coalesce();
+    } else {
+      size += sizeof(size_t);
+      munmap(item_f, size);
+    }
+    ret = pthread_mutex_unlock(&lock);
+    assert(ret != -1);
+}
+
 
 void*
 xrealloc(void* prev, size_t nn)
